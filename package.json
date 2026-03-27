@@ -1,0 +1,15 @@
+{
+  "name": "market-ws-dashboard",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "lightweight-charts": "^5.0.8",
+    "vite": "^7.1.0"
+  }
+}
