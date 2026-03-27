@@ -2,6 +2,8 @@ import { CandlestickSeries, createChart, HistogramSeries } from "lightweight-cha
 import "./style.css";
 
 const DEFAULT_WS_URL = "ws://localhost:8082/ws/market";
+const DEFAULT_ORDERBOOK_MULTIPLIER = 10;
+const ORDERBOOK_TOPICS_ALL = ["orderbook", "orderbook.1", "orderbook.5", "orderbook.10", "orderbook.50", "orderbook.100"];
 
 const CHART_THEMES = {
   dark: {
@@ -48,6 +50,13 @@ document.querySelector("#app").innerHTML = `
       </div>
       <div class="toolbar">
         <select id="pairSelect"><option value="">Auto</option></select>
+        <select id="multiplierSelect" aria-label="Orderbook Multiplier">
+          <option value="1">OB x1</option>
+          <option value="5">OB x5</option>
+          <option value="10" selected>OB x10</option>
+          <option value="50">OB x50</option>
+          <option value="100">OB x100</option>
+        </select>
         <select id="themeSelect" aria-label="Theme">
           <option value="dark">Dark</option>
           <option value="light">Light</option>
@@ -116,13 +125,6 @@ document.querySelector("#app").innerHTML = `
         </div>
       </section>
     </div>
-
-    <select id="topicsSelect" class="hidden-control" multiple>
-      <option value="orderbook" selected>orderbook</option>
-      <option value="ticker" selected>ticker</option>
-      <option value="candle" selected>candle</option>
-      <option value="trade" selected>trade</option>
-    </select>
   </div>
 `;
 
@@ -130,6 +132,7 @@ const state = {
   ws: null,
   depth: 10,
   theme: getInitialTheme(),
+  selectedMultiplier: DEFAULT_ORDERBOOK_MULTIPLIER,
   selectedPair: "",
   pairSet: new Set(),
   booksRawByContract: new Map(),
@@ -142,13 +145,13 @@ const state = {
   volumeSeries: null,
   syncingTimeRange: false,
   syncingCrosshair: false,
+  subscribedTopics: new Set(),
   selectedInterval: "1m",
-  allTopics: ["ticker", "candle", "orderbook", "trade"],
 };
 
 const el = {
-  topicsSelect: document.getElementById("topicsSelect"),
   pairSelect: document.getElementById("pairSelect"),
+  multiplierSelect: document.getElementById("multiplierSelect"),
   themeSelect: document.getElementById("themeSelect"),
   tickerContract: document.getElementById("tickerContract"),
   tickerLast: document.getElementById("tickerLast"),
@@ -431,8 +434,44 @@ function log(message) {
   console.log(`[${now()}] ${message}`);
 }
 
-function selectedTopics() {
-  return Array.from(el.topicsSelect.selectedOptions).map((x) => x.value);
+function getCandleTopic(interval = state.selectedInterval) {
+  return `candle.${normalizeIntervalName(interval) || "1m"}`;
+}
+
+function getOrderbookTopic(multiplier = state.selectedMultiplier) {
+  return `orderbook.${multiplier}`;
+}
+
+function getDesiredTopics() {
+  return ["ticker", "trade", getCandleTopic(), getOrderbookTopic()];
+}
+
+function sendTopicCommand(op, topics) {
+  if (!state.ws || state.ws.readyState !== WebSocket.OPEN || !topics.length) return;
+  state.ws.send(JSON.stringify({ op, topics }));
+  log(`${op} topics=${JSON.stringify(topics)}`);
+}
+
+function syncSubscriptions({ resetDefaultOrderbook = false } = {}) {
+  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+
+  const desiredTopics = getDesiredTopics();
+  const desiredSet = new Set(desiredTopics);
+  const unsubscribeTopics = Array.from(state.subscribedTopics).filter((topic) => !desiredSet.has(topic));
+  const subscribeTopics = desiredTopics.filter((topic) => !state.subscribedTopics.has(topic));
+
+  if (resetDefaultOrderbook) {
+    // Defensive reset: clear all possible orderbook streams before subscribing current multiplier.
+    sendTopicCommand("unsubscribe", ORDERBOOK_TOPICS_ALL);
+  }
+  if (unsubscribeTopics.length) {
+    sendTopicCommand("unsubscribe", unsubscribeTopics);
+  }
+  if (subscribeTopics.length) {
+    sendTopicCommand("subscribe", subscribeTopics);
+  }
+
+  state.subscribedTopics = desiredSet;
 }
 
 function normalizeType(rawType) {
@@ -443,6 +482,23 @@ function fmtNum(v, digits = 4) {
   const n = Number(v);
   if (!Number.isFinite(n)) return "-";
   return n.toLocaleString(undefined, { maximumFractionDigits: digits });
+}
+
+function formatTs(ts) {
+  const n = Number(ts);
+  if (!Number.isFinite(n)) return "-";
+  const ms = n > 1e12 ? n : n * 1000;
+  const d = new Date(ms);
+  const pad2 = (v) => String(v).padStart(2, "0");
+  const pad3 = (v) => String(v).padStart(3, "0");
+  const yyyy = d.getFullYear();
+  const MM = pad2(d.getMonth() + 1);
+  const dd = pad2(d.getDate());
+  const HH = pad2(d.getHours());
+  const mm = pad2(d.getMinutes());
+  const ss = pad2(d.getSeconds());
+  const SSS = pad3(d.getMilliseconds());
+  return `${yyyy}-${MM}-${dd} ${HH}:${mm}:${ss}.${SSS}`;
 }
 
 function registerPair(contract) {
@@ -479,8 +535,9 @@ function connect() {
   state.ws = new WebSocket(url);
 
   state.ws.onopen = () => {
+    state.subscribedTopics = new Set();
     log(`connected: ${url}`);
-    applyOnlyTopics(selectedTopics());
+    syncSubscriptions({ resetDefaultOrderbook: true });
   };
 
   state.ws.onmessage = (event) => {
@@ -520,18 +577,9 @@ function connect() {
 
   state.ws.onclose = () => {
     log("disconnected");
+    state.subscribedTopics = new Set();
     state.ws = null;
   };
-}
-
-function applyOnlyTopics(topics) {
-  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
-  const selected = new Set(topics);
-  const toUnsub = state.allTopics.filter((t) => !selected.has(t));
-
-  if (toUnsub.length) state.ws.send(JSON.stringify({ op: "unsubscribe", topics: toUnsub }));
-  if (topics.length) state.ws.send(JSON.stringify({ op: "subscribe", topics }));
-  log(`subscribed-only topics=${JSON.stringify(topics)}`);
 }
 
 function ensureRowCount(tbody, count) {
@@ -630,7 +678,7 @@ function renderOrderbookByContract(contract) {
     : null;
   el.midPrice.textContent = mid == null ? "-" : fmtNum(mid, 8);
   el.spreadValue.textContent = spread == null ? "-" : fmtNum(spread, 8);
-  el.bookMeta.textContent = `ts=${raw.timestamp} multiplier=${raw.multiplier ?? "-"} step=${raw.levelStep ?? "-"} depth=${state.depth}`;
+  el.bookMeta.textContent = `ts=${formatTs(raw.timestamp)} multiplier=${raw.multiplier ?? "-"} step=${raw.levelStep ?? "-"} depth=${state.depth}`;
 }
 
 function renderTicker(ticker) {
@@ -794,10 +842,15 @@ function renderSelectedPair() {
   renderTrades(pair);
 }
 
-el.topicsSelect.addEventListener("change", () => applyOnlyTopics(selectedTopics()));
 el.pairSelect.addEventListener("change", () => {
   state.selectedPair = el.pairSelect.value;
   renderSelectedPair();
+});
+el.multiplierSelect.addEventListener("change", () => {
+  const nextMultiplier = Number(el.multiplierSelect.value);
+  if (!Number.isFinite(nextMultiplier) || nextMultiplier <= 0) return;
+  state.selectedMultiplier = nextMultiplier;
+  syncSubscriptions();
 });
 el.themeSelect.addEventListener("change", () => {
   applyTheme(el.themeSelect.value);
@@ -807,6 +860,7 @@ el.intervalBtns.forEach((btn) => {
     state.selectedInterval = btn.dataset.interval || "1m";
     el.intervalBtns.forEach((x) => x.classList.remove("active"));
     btn.classList.add("active");
+    syncSubscriptions();
     setCandleSeriesForPair(selectedPair());
   });
 });
