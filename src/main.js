@@ -730,19 +730,42 @@ function fmtTime(ts) {
   return new Date(ms).toLocaleTimeString();
 }
 
-function renderTrades(contract) {
-  const list = (state.tradesByContract.get(contract) || []).slice(0, 20);
-  el.tradesBody.innerHTML = "";
-  for (const t of list) {
+function ensureTradeRows(count) {
+  while (el.tradesBody.rows.length < count) {
     const tr = document.createElement("tr");
     const tdTime = document.createElement("td");
     const tdPrice = document.createElement("td");
     const tdQty = document.createElement("td");
+    tr.append(tdTime, tdPrice, tdQty);
+    el.tradesBody.appendChild(tr);
+  }
+  while (el.tradesBody.rows.length > count) {
+    el.tradesBody.deleteRow(el.tradesBody.rows.length - 1);
+  }
+}
+
+function renderTrades(contract) {
+  const rowCount = 26;
+  const list = (state.tradesByContract.get(contract) || []).slice(0, rowCount);
+  ensureTradeRows(rowCount);
+
+  for (let i = 0; i < rowCount; i += 1) {
+    const tr = el.tradesBody.rows[i];
+    const tdTime = tr.cells[0];
+    const tdPrice = tr.cells[1];
+    const tdQty = tr.cells[2];
+    const t = list[i];
+
+    if (!t) {
+      tdTime.textContent = "";
+      tdPrice.textContent = "";
+      tdQty.textContent = "";
+      continue;
+    }
+
     tdTime.textContent = fmtTime(t.timestamp);
     tdPrice.textContent = fmtNum(t.price, 8);
     tdQty.textContent = fmtNum(t.quantity, 8);
-    tr.append(tdTime, tdPrice, tdQty);
-    el.tradesBody.appendChild(tr);
   }
 }
 
