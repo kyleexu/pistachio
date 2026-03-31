@@ -77,6 +77,7 @@ document.querySelector("#app").innerHTML = `
         </div>
         <div class="candle-wrap">
           <div class="price-pane">
+            <div id="chartOhlc" class="chart-ohlc is-hidden" aria-live="polite"></div>
             <div id="priceChart" class="chart-canvas"></div>
           </div>
           <div class="volume-pane">
@@ -161,6 +162,7 @@ const el = {
   tickerHigh: document.getElementById("tickerHigh"),
   tickerLow: document.getElementById("tickerLow"),
   tickerChange: document.getElementById("tickerChange"),
+  chartOhlc: document.getElementById("chartOhlc"),
   priceChart: document.getElementById("priceChart"),
   volumeChart: document.getElementById("volumeChart"),
   intervalBtns: Array.from(document.querySelectorAll(".interval-btn")),
@@ -178,6 +180,17 @@ function getPaneSize(target) {
     width: Math.max(target.clientWidth, 320),
     height: Math.max(target.clientHeight, 80),
   };
+}
+
+function setHoverOhlc(bar) {
+  if (!el.chartOhlc) return;
+  if (!bar) {
+    el.chartOhlc.textContent = "";
+    el.chartOhlc.classList.add("is-hidden");
+    return;
+  }
+  el.chartOhlc.textContent = `Open: ${fmtNum(bar.open, 8)}   High: ${fmtNum(bar.high, 8)}   Low: ${fmtNum(bar.low, 8)}   Close: ${fmtNum(bar.close, 8)}`;
+  el.chartOhlc.classList.remove("is-hidden");
 }
 
 function getChartTheme() {
@@ -327,12 +340,12 @@ function initCandleCharts() {
       borderColor: theme.gridColor,
       minimumWidth: 132,
       autoScale: true,
-      scaleMargins: { top: 0.08, bottom: 0.08 },
+      scaleMargins: { top: 0.08, bottom: 0 },
     },
     leftPriceScale: { visible: false },
     handleScale: {
       axisPressedMouseMove: {
-        price: false,
+        price: true,
         time: true,
       },
       mouseWheel: true,
@@ -405,6 +418,17 @@ function initCandleCharts() {
   syncCrosshair(volumeChart, priceChart, series, (time) => {
     const bar = barByTime(time);
     return Number(bar?.close ?? 0);
+  });
+
+  priceChart.subscribeCrosshairMove((param) => {
+    const point = param?.point;
+    const inBounds = Boolean(point && point.x >= 0 && point.y >= 0);
+    if (!param || param.time == null || !inBounds) {
+      setHoverOhlc(null);
+      return;
+    }
+    const bar = param.seriesData?.get(series) || null;
+    setHoverOhlc(bar);
   });
 
   const priceObserver = new ResizeObserver(() => {
@@ -849,6 +873,7 @@ function setCandleSeriesForPair(pair) {
 function renderSelectedPair() {
   const pair = selectedPair();
   if (!pair) return;
+  setHoverOhlc(null);
   const tk = state.tickerRawByContract.get(pair);
   el.tickerContract.textContent = pair;
   el.tickerLast.textContent = String(tk?.lastPrice ?? "-");
